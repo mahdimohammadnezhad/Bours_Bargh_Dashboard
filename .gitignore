@@ -1,0 +1,37 @@
+# Env / secrets
+.env
+.env.local
+*.env
+
+# Python
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Raw response archive (see docs/ARCHITECTURE.md - raw data storage)
+data/raw/
+
+# Local SQLite database (rebuilt from the sources; >100 MB, over GitHub's file limit)
+*.db
+*.db-wal
+*.db-shm
+*.db.bak*
+
+# Local Claude Code settings
+.claude/settings.local.json
