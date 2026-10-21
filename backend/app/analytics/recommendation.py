@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-from app.analytics.forecast import DailyForecast, MonthlyOutlook, ModelScore
+from app.analytics.forecast import DailyForecast, ModelScore, MonthlyOutlook, jalali_month_of
 from app.analytics.patterns import PatternsResult
 
 OUTLOOK_THRESHOLD_PCT = 2.0
@@ -25,6 +25,7 @@ SHORT_TERM_THRESHOLD_PCT = 1.0
 ANALOGUE_UP_SHARE = 0.6
 ANALOGUE_DOWN_SHARE = 0.4
 SIGNAL_THRESHOLD = 0.3
+MIN_DIRECTIONAL_EVIDENCE = 2
 HIGH_VOLATILITY_PERCENTILE = 90.0
 
 
@@ -75,14 +76,17 @@ def build_recommendation(
     patterns: PatternsResult,
     volatility_percentile: float | None,
 ) -> Recommendation:
-    if monthly.status != "ok" or patterns.status != "ok" or not monthly.points or monthly.origin_price is None:
+    if patterns.status != "ok":
         return Recommendation(status="insufficient_data", reason="inputs")
+    # Young markets (Free Power) have no validated monthly outlook; the signal
+    # then rests on the evidence that does exist instead of being invented.
+    has_outlook = monthly.status == "ok" and bool(monthly.points) and monthly.origin_price is not None
 
     evidence: list[Evidence] = []
     selected_score = _score_for(monthly.scores, monthly.selected_model)
 
     # 1-2. Monthly outlook (model): next month and three months out.
-    for h, key in ((1, "outlook_next_month"), (3, "outlook_3_months")):
+    for h, key in ((1, "outlook_next_month"), (3, "outlook_3_months")) if has_outlook else ():
         point = next((p for p in monthly.points if p.horizon_months == h), None)
         if point is None:
             continue
@@ -111,7 +115,12 @@ def build_recommendation(
         )
 
     # 3. Historical month-to-month move from the current month (observed).
-    current_month = monthly.origin[1] if monthly.origin else None
+    if monthly.origin:
+        current_month = monthly.origin[1]
+    elif patterns.current_day:
+        current_month = jalali_month_of(patterns.current_day)[1]
+    else:
+        current_month = None
     transition = next((t for t in patterns.transitions if t.from_month == current_month), None)
     if transition is not None:
         up = transition.share_up
@@ -178,9 +187,21 @@ def build_recommendation(
 
     total = sum(e.strength for e in evidence)
     if total == 0:
-        return Recommendation(status="ok", as_of=daily.last_day, signal="mixed", score=0.0, evidence=evidence)
+        return Recommendation(
+            status="ok",
+            as_of=daily.last_day,
+            signal="mixed",
+            score=0.0,
+            caution=[] if has_outlook else ["short_history"],
+            evidence=evidence,
+        )
     score = sum(e.direction * e.strength for e in evidence) / total
     signal = "upward_pressure" if score >= SIGNAL_THRESHOLD else "downward_pressure" if score <= -SIGNAL_THRESHOLD else "mixed"
+    # One piece of evidence agreeing with itself is not "100% agreement":
+    # a directional signal needs at least two independent directional items
+    # (Free Power on 2026-10-21 had only the analogue vote).
+    if sum(1 for e in evidence if e.direction != 0 and e.strength > 0) < MIN_DIRECTIONAL_EVIDENCE:
+        signal = "mixed"
 
     agreement = None
     directional = [e for e in evidence if e.direction != 0 and e.strength > 0]
@@ -198,6 +219,8 @@ def build_recommendation(
         caution.append("current_month_partial")
     if any(p.month[1] == 1 for p in monthly.points[:3]):
         caution.append("nowruz_reset_ahead")
+    if not has_outlook:
+        caution.append("short_history")
 
     return Recommendation(
         status="ok",

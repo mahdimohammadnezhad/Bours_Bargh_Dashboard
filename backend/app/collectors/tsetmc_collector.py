@@ -194,22 +194,29 @@ class TSETMCCollector(BaseCollector):
         if not isinstance(raw, dict):
             return None
         overview = raw.get("powerOverview") if isinstance(raw.get("powerOverview"), dict) else raw
-        value_field = f"f{FREE_POWER_FLOW_ID}_MarketActivityQTotCap"
-        if value_field not in overview:
+        # The tsetmc.ir "بازار برق آزاد در یک نگاه" panel reads these fields
+        # (matched row by row against the site on 2026-10-11 and 2026-10-21):
+        #   totalValue / totalCount      -> physical Free market (فیزیکی)
+        #   f60_MarketActivityQTotCap /
+        #   f60_MarketActivityZTotTran   -> Free power forward ("سلف") trades
+        #   dggPlus60_MarketActivityQTotCap -> total = physical + forward
+        # So the market total is dggPlus60 and the trade count is both counts
+        # added: 2026-10-11 had 265B / 7 trades all forward (physical 0),
+        # 2026-10-21 had 95.98B / 3 trades all physical (forward 0).
+        total_field = f"dggPlus{FREE_POWER_FLOW_ID}_MarketActivityQTotCap"
+        if total_field not in overview:
             return None
         try:
+            physical_count = self._to_int(overview.get("totalCount"))
+            forward_count = self._to_int(overview.get(f"f{FREE_POWER_FLOW_ID}_MarketActivityZTotTran"))
             return NormalizedQuote(
                 source_id=self.source_id,
                 source_symbol="TSETMC_FREE_POWER_OVERVIEW",
                 observed_at=datetime.now(timezone.utc),
-                # The flow-specific QTotCap, not `totalValue`: totalValue
-                # is some other aggregate - 4.67 trillion vs this market's
-                # 2.97 billion on 2026-09-05, and 0 all through an open
-                # session with real trades on 2026-10-11 - while QTotCap
-                # matches the market's own contract trades (see module
-                # docstring) and IEE's Free-market daily total.
-                value=self._to_float(overview.get(value_field)),
-                transaction_count=self._to_int(overview.get(f"f{FREE_POWER_FLOW_ID}_MarketActivityZTotTran")),
+                value=self._to_float(overview.get(total_field)),
+                transaction_count=(physical_count or 0) + (forward_count or 0)
+                if physical_count is not None or forward_count is not None
+                else None,
                 raw=overview,
             )
         except Exception as exc:  # noqa: BLE001
@@ -228,6 +235,20 @@ class TSETMCCollector(BaseCollector):
         )
         observed_at = datetime.now(timezone.utc)
         quotes: list[NormalizedQuote] = []
+        # Always report all levels. When the book has fewer orders than
+        # before, a missing level must become an explicit empty row - stored
+        # quotes only change when written, so otherwise yesterday's bid stays
+        # on screen as if it were live (seen 2026-10-21: one bid at 90,000 on
+        # tsetmc.ir, three stale Oct-14 bids still shown under it).
+        for level in range(len(rows) + 1, BEST_LIMITS_TOP + 1):
+            quotes.append(
+                NormalizedQuote(
+                    source_id=self.source_id,
+                    source_symbol=f"TSETMC_FREE_{side}_L{level}",
+                    observed_at=observed_at,
+                    raw={"empty": True},
+                )
+            )
         for level, row in enumerate(rows[:BEST_LIMITS_TOP], start=1):
             if not isinstance(row, dict):
                 continue

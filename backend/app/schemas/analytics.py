@@ -66,6 +66,7 @@ class AnomaliesOut(BaseModel):
 
 
 class SeriesInfo(BaseModel):
+    market: str
     source_id: str
     symbol: str
     unit: str

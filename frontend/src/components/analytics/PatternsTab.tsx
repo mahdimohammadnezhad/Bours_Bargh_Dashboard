@@ -4,9 +4,10 @@ import { EmptyState } from "@/components/EmptyState";
 import { StatTile } from "@/components/StatTile";
 import { DivergingColumns } from "@/components/charts/DivergingColumns";
 import { api } from "@/lib/api";
+import type { Market } from "@/lib/types";
 import { formatInt } from "@/lib/format";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
-import { MarketScope, SectionCard, degrees, isolate, monthName, price, signedPct, useEndpoint } from "./common";
+import { MarketScope, SectionCard, degrees, isolate, monthName, price, signedPct, useEndpoint, reasonText } from "./common";
 
 const FEATURE_ORDER = [
   "momentum_20d_pct",
@@ -22,9 +23,9 @@ function tempBinLabel(low: number, high: number): string {
   return `${low}–${high}`;
 }
 
-export function PatternsTab() {
+export function PatternsTab({ market }: { market: Market }) {
   const { t, lang } = useI18n();
-  const { data, error } = useEndpoint(api.patterns);
+  const { data, error } = useEndpoint(() => api.patterns(market));
   // Reading direction decides which way "from -> to" points.
   const arrow = lang === "fa" ? "←" : "→";
   const listSep = lang === "fa" ? "، " : ", ";
@@ -32,7 +33,7 @@ export function PatternsTab() {
   if (error) return <EmptyState title={t("pt.failed")} detail={error} />;
   if (!data) return <EmptyState title={t("analytics.loading")} />;
   if (data.status !== "ok") {
-    return <EmptyState title={t("pt.failed")} detail={t("fc.insufficient", { reason: data.reason ?? "—" })} />;
+    return <EmptyState title={t("pt.failed")} detail={t("fc.insufficient", { reason: reasonText(t, data.reason) })} />;
   }
 
   const featureValue = (key: (typeof FEATURE_ORDER)[number], v: number | undefined) => {

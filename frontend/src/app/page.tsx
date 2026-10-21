@@ -49,7 +49,10 @@ export default function OverviewPage() {
   // arbitrary order.
   const quoteList = useMemo(
     () =>
-      Array.from(quotes.values()).sort(
+      Array.from(quotes.values())
+        // Order-book levels the book no longer has (explicit empty rows).
+        .filter((q) => !(q.raw as { empty?: boolean } | null | undefined)?.empty)
+        .sort(
         (a, b) =>
           new Date(b.observed_at).getTime() - new Date(a.observed_at).getTime() ||
           (b.value ?? -1) - (a.value ?? -1),
@@ -57,10 +60,14 @@ export default function OverviewPage() {
     [quotes],
   );
 
-  // Default to today's most-traded priced instrument, so the KPI row and
-  // chart open on the market's main contract. Falls back to any priced
-  // quote (aggregates often have no last_price at all).
+  // The dashboard is about Free Power: open on IEE's Free market daily
+  // average (matches tsetmc.ir's physical Free Power total). Picking the
+  // most-traded instrument instead landed on the main regulated market
+  // (~4,900 Rials/kWh vs Free Power's ~100,000+), which read as a wrong price.
+  // Falls back to today's most-traded priced instrument, then any priced quote.
   const defaultQuote = useMemo(() => {
+    const free = quoteList.find((q) => q.source_id === "iee_new" && q.source_symbol === "IEE_FREE_DAY" && q.last_price != null);
+    if (free) return free;
     const today = new Date().toDateString();
     const tradedToday = quoteList.filter(
       (q) =>

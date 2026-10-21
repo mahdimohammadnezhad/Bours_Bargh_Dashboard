@@ -16,7 +16,12 @@ from app.analytics.forecast import (
 )
 from app.analytics.patterns import build_patterns
 from app.analytics.recommendation import build_recommendation
-from app.services.historical_ingestion import POWER_BASELOAD_SYMBOL, aggregate_power_baseload_daily
+from app.services.historical_ingestion import (
+    DAILY_SERIES,
+    POWER_BASELOAD_SYMBOL,
+    aggregate_daily_vwap,
+    aggregate_power_baseload_daily,
+)
 from app.services.weather import CITIES, combine_locations
 
 
@@ -197,6 +202,20 @@ class TestBaseloadAggregation:
         assert q.last_price == pytest.approx(expected, abs=0.01)
         assert q.transaction_count == 99
         assert len(q.raw["contracts"]) == 2  # peak and untraded rows left out
+
+    def test_physical_free_power_excludes_self_supply_and_plain_power(self):
+        # Live 2026-10-21: the physical Free-market report also lists
+        # "برق خودتامین" (~11-18k) and "برق" auctions - not Free Power.
+        rows = [
+            {"tradeDateShamsi": "1405/07/29", "instrumentDisplayName": "برق آزاد", "energySymbol": "DDGNZCAB00W050809",
+             "tradeNo": "3", "totalValueRials": "95,981,760,000", "kiloWattHours": "799,848", "tradedAveragePrice": "120,000"},
+            {"tradeDateShamsi": "1405/07/29", "instrumentDisplayName": "برق خودتامین", "energySymbol": "DSECRCAB00M050201",
+             "tradeNo": "1", "totalValueRials": "1,800,000,000", "kiloWattHours": "100,000", "tradedAveragePrice": "18,000"},
+        ]
+        quotes = aggregate_daily_vwap(rows, DAILY_SERIES["free_physical"])
+        assert len(quotes) == 1
+        assert quotes[0].last_price == pytest.approx(120000, abs=1)
+        assert quotes[0].source_symbol == DAILY_SERIES["free_physical"].symbol
 
     def test_single_contract_vwap_equals_iee_avg_price(self):
         q = aggregate_power_baseload_daily(self.ROWS[:1])[0]

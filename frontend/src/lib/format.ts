@@ -9,6 +9,14 @@ export function formatCompact(value: number | null | undefined): string {
   return compactNumber.format(value);
 }
 
+const compactPrecise = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 3 });
+
+/** Compact with up to 3 decimals, like tsetmc.ir's "95.982 B". */
+export function formatCompactPrecise(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return compactPrecise.format(value);
+}
+
 export function formatPrice(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
   return plainNumber.format(value);

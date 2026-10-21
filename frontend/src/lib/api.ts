@@ -11,6 +11,7 @@ import type {
   RecommendationResponse,
   SourceHealth,
 } from "./types";
+import { DEFAULT_MARKET, type Market } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -58,9 +59,10 @@ export const api = {
       symbol,
       lookback_days: String(lookbackDays),
     }),
-  forecast: () => getJson<ForecastResponse>("/api/analytics/forecast"),
-  patterns: () => getJson<PatternsResponse>("/api/analytics/patterns"),
-  recommendations: () => getJson<RecommendationResponse>("/api/analytics/recommendations"),
+  forecast: (market: Market = DEFAULT_MARKET) => getJson<ForecastResponse>("/api/analytics/forecast", { market }),
+  patterns: (market: Market = DEFAULT_MARKET) => getJson<PatternsResponse>("/api/analytics/patterns", { market }),
+  recommendations: (market: Market = DEFAULT_MARKET) =>
+    getJson<RecommendationResponse>("/api/analytics/recommendations", { market }),
 };
 
 export const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000/ws/market";

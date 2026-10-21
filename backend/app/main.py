@@ -16,10 +16,10 @@ from app.core.rate_limit import RateLimitMiddleware
 from app.database.session import SessionLocal, init_db
 from app.models.market import MarketQuote
 from app.services.historical_ingestion import (
-    POWER_BASELOAD_SYMBOL,
+    DAILY_SERIES,
+    backfill_daily_series,
     backfill_iee_derivative_free_power_history,
     backfill_iee_monthly_prices,
-    backfill_power_baseload_history,
 )
 from app.services.historical_ingestion import SOURCE_ID as HISTORICAL_SOURCE_ID
 from app.services.weather import refresh_weather
@@ -65,27 +65,28 @@ async def maybe_run_historical_backfill() -> None:
 
 
 async def refresh_forecast_inputs() -> None:
-    """Price history for the forecast: everything since 1398 the first time,
-    then only from the latest stored Jalali year (one request). Weather:
+    """Daily price history for each forecast market (DAILY_SERIES: main power
+    base load, Free Power forward base load, physical Free Power): the full
+    history the first time, then only from the latest stored Jalali year
+    (one request per series). Weather:
     incremental archive + the latest 16-day forecast. Each part fails
     independently and is retried at the next refresh."""
     async with httpx.AsyncClient(follow_redirects=True) as client, SessionLocal() as session:
-        try:
-            latest = (
-                await session.execute(
-                    select(func.max(MarketQuote.observed_at)).where(
-                        MarketQuote.source_id == HISTORICAL_SOURCE_ID,
-                        MarketQuote.source_symbol == POWER_BASELOAD_SYMBOL,
+        for series in DAILY_SERIES.values():
+            try:
+                latest = (
+                    await session.execute(
+                        select(func.max(MarketQuote.observed_at)).where(
+                            MarketQuote.source_id == HISTORICAL_SOURCE_ID,
+                            MarketQuote.source_symbol == series.symbol,
+                        )
                     )
-                )
-            ).scalar_one_or_none()
-            start_year = jdatetime.date.fromgregorian(date=latest.date()).year if latest else None
-            written = await backfill_power_baseload_history(
-                session, client, settings.IEE_NEW_BASE_URL, **({"start_jalali_year": start_year} if start_year else {})
-            )
-            logger.info("forecast inputs: %d base-load trading days upserted", written)
-        except Exception as exc:  # noqa: BLE001 - background refresh, must not crash the app
-            logger.warning("forecast inputs: price history refresh failed: %r", exc)
+                ).scalar_one_or_none()
+                start_year = jdatetime.date.fromgregorian(date=latest.date()).year if latest else None
+                written = await backfill_daily_series(session, client, settings.IEE_NEW_BASE_URL, series, start_year)
+                logger.info("forecast inputs: %s - %d trading days upserted", series.symbol, written)
+            except Exception as exc:  # noqa: BLE001 - background refresh, must not crash the app
+                logger.warning("forecast inputs: %s refresh failed: %r", series.symbol, exc)
         try:
             await refresh_weather(session, client)
         except Exception as exc:  # noqa: BLE001

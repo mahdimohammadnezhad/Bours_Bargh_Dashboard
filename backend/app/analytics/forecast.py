@@ -293,18 +293,22 @@ def _daily_bucket(h: int) -> str:
 
 
 def build_daily_forecast(
-    prices: list[tuple[date, float]], temps: dict[date, float], horizon: int = HORIZON_DAYS
+    prices: list[tuple[date, float]],
+    temps: dict[date, float],
+    horizon: int = HORIZON_DAYS,
+    min_trading_days: int = MIN_TRADING_DAYS,
 ) -> DailyForecast:
     """prices: trading-day series. temps: national daily mean temperature,
-    observed and forecast (forecast days bound how far ahead this goes)."""
+    observed and forecast (forecast days bound how far ahead this goes).
+    min_trading_days is lower for young markets (Free Power: ~200 days)."""
     prices = sorted((d, p) for d, p in prices if p and p > 0)
-    if len(prices) < MIN_TRADING_DAYS:
+    if len(prices) < min_trading_days:
         return DailyForecast(status="insufficient_data", reason="price_history", trading_days=len(prices))
     days = [d for d, _ in prices]
     price_of = dict(prices)
     logp = {d: math.log(p) for d, p in prices}
     drivers = {d: x for d in days if (x := day_drivers(temps, d)) is not None}
-    if len(drivers) < MIN_TRADING_DAYS:
+    if len(drivers) < min_trading_days:
         return DailyForecast(status="insufficient_data", reason="temperature_history", trading_days=len(prices))
 
     pairs: list[tuple[date, list[float], float]] = []

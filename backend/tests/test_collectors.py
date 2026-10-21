@@ -15,14 +15,17 @@ from app.services.market_service import quote_fingerprint
 # capture (not guessed - see docs/DATA_SOURCES.md) - mocks used only in
 # tests, per project rule that mock data is never allowed in production
 # code paths.
+# Live capture 2026-10-21 (tsetmc.ir showed: physical 95.982 B, 3 trades,
+# forward 0, total 95.982 B).
 SAMPLE_OVERVIEW = {
     "powerOverview": {
-        "totalCount": 36,
-        "totalValue": 4673934000000.00,
+        "totalCount": 3,
+        "totalValue": 95981760000.0,
         "mazadCount": 0,
-        "mazadValue": 0.00,
-        "f60_MarketActivityQTotCap": 2973600000.00,
-        "f60_MarketActivityZTotTran": 2.00,
+        "mazadValue": 0.0,
+        "f60_MarketActivityQTotCap": 0.0,
+        "dggPlus60_MarketActivityQTotCap": 95981760000.0,
+        "f60_MarketActivityZTotTran": 0.0,
         "marketStateTitle": "بسته",
     }
 }
@@ -119,11 +122,35 @@ class TestTSETMCCollectorParse:
         collector = TSETMCCollector()
         quotes = collector.parse(SAMPLE_TSETMC_RAW)
         overview = next(q for q in quotes if q.source_symbol == "TSETMC_FREE_POWER_OVERVIEW")
-        # f60_MarketActivityQTotCap, not totalValue (4.67T here, and 0 in
-        # live open-market captures) - see _parse_overview.
-        assert overview.value == 2973600000.0
-        assert overview.transaction_count == 2
+        # The site's "ارزش کل معاملات برق آزاد" (physical + forward).
+        assert overview.value == 95981760000.0
+        assert overview.transaction_count == 3
         assert overview.raw["marketStateTitle"] == "بسته"
+
+    def test_overview_total_counts_forward_trades_too(self):
+        # Live capture 2026-10-11: all trades were forward ("سلف"), none physical.
+        forward_day = {
+            "powerOverview": {
+                **SAMPLE_OVERVIEW["powerOverview"],
+                "totalCount": 0,
+                "totalValue": 0.0,
+                "f60_MarketActivityQTotCap": 265090356000.0,
+                "dggPlus60_MarketActivityQTotCap": 265090356000.0,
+                "f60_MarketActivityZTotTran": 7.0,
+            }
+        }
+        overview = TSETMCCollector()._parse_overview(forward_day)
+        assert overview.value == 265090356000.0
+        assert overview.transaction_count == 7
+
+    def test_missing_order_book_levels_become_explicit_empty_rows(self):
+        # One bid on the site -> levels 2-4 must be cleared, not left stale.
+        quotes = TSETMCCollector().parse(SAMPLE_TSETMC_RAW)
+        by_symbol = {q.source_symbol: q for q in quotes}
+        assert by_symbol["TSETMC_FREE_DEMAND_L1"].last_price == 50000.0
+        for level in (2, 3, 4):
+            empty = by_symbol[f"TSETMC_FREE_DEMAND_L{level}"]
+            assert empty.last_price is None and empty.raw == {"empty": True}
 
     def test_parses_demand_and_supply_price_levels(self):
         collector = TSETMCCollector()
@@ -202,7 +229,7 @@ class TestTSETMCCollectorParse:
         collector = TSETMCCollector()
         broken = {
             **SAMPLE_TSETMC_RAW,
-            "overview": {"powerOverview": {**SAMPLE_OVERVIEW["powerOverview"], "f60_MarketActivityQTotCap": "not-a-number"}},
+            "overview": {"powerOverview": {**SAMPLE_OVERVIEW["powerOverview"], "dggPlus60_MarketActivityQTotCap": "not-a-number"}},
         }
         quotes = collector.parse(broken)
         overview = next(q for q in quotes if q.source_symbol == "TSETMC_FREE_POWER_OVERVIEW")

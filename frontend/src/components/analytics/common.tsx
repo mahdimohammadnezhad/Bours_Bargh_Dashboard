@@ -24,6 +24,13 @@ export function useEndpoint<T>(load: () => Promise<T>): { data: T | null; error:
   return { data, error };
 }
 
+/** Why a section has no result, in words (backend `reason` codes). */
+export function reasonText(t: Translate, reason: string | null | undefined): string {
+  const key = `fc.reason.${reason ?? "unknown"}` as TranslationKey;
+  const text = t(key);
+  return text === key ? t("fc.reason.unknown") : text;
+}
+
 export function monthName(t: Translate, month: number): string {
   return t(`month.${month}` as TranslationKey);
 }
@@ -69,6 +76,7 @@ export function MarketScope({ series }: { series: SeriesInfo }) {
   return (
     <p className="text-xs text-text-muted">
       {t("analytics.marketScope", {
+        market: t(`market.${series.market}` as TranslationKey),
         first: series.first_day ?? "—",
         last: series.last_day ?? "—",
         n: series.trading_days,

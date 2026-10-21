@@ -10,6 +10,7 @@ import { RecommendationsTab } from "@/components/analytics/RecommendationsTab";
 import { api } from "@/lib/api";
 import { formatPercent, formatPrice } from "@/lib/format";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
+import { DEFAULT_MARKET, MARKETS, type Market } from "@/lib/types";
 import type { AnalyticsOverview, Anomaly, AnomaliesResponse, AnomalySeverity } from "@/lib/types";
 import { useMarketSocket } from "@/lib/useMarketSocket";
 
@@ -54,6 +55,11 @@ function AnalyticsPageInner() {
     return TAB_KEYS.includes(requested as TabKey) ? (requested as TabKey) : "overview";
   });
   const isMarketTab = MARKET_TABS.includes(active);
+  // Free Power by default; ?market= lets other pages deep-link.
+  const [market, setMarket] = useState<Market>(() => {
+    const requested = searchParams.get("market");
+    return MARKETS.includes(requested as Market) ? (requested as Market) : DEFAULT_MARKET;
+  });
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   const quoteList = useMemo(() => Array.from(quotes.values()), [quotes]);
@@ -110,12 +116,35 @@ function AnalyticsPageInner() {
         ))}
       </div>
 
+      {isMarketTab && (
+        <div className="flex flex-wrap items-center gap-2" role="radiogroup" aria-label={t("analytics.market")}>
+          <span className="text-xs font-medium text-text-secondary">{t("analytics.market")}</span>
+          {MARKETS.map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={market === m}
+              onClick={() => setMarket(m)}
+              className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                market === m
+                  ? "border-[var(--series-1)] bg-[var(--series-1)]/10 font-semibold text-text-primary"
+                  : "border-border-hairline text-text-secondary hover:text-text-primary"
+              }`}
+            >
+              {t(`market.${m}` as TranslationKey)}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* key={market}: each market is a fresh load, not a stale mix. */}
       {active === "forecast" ? (
-        <ForecastTab />
+        <ForecastTab key={market} market={market} />
       ) : active === "patterns" ? (
-        <PatternsTab />
+        <PatternsTab key={market} market={market} />
       ) : active === "recommendations" ? (
-        <RecommendationsTab />
+        <RecommendationsTab key={market} market={market} />
       ) : !sourceId || !symbol ? (
         <EmptyState title={t("analytics.noInstrument.title")} detail={t("analytics.noInstrument.detail")} />
       ) : active === "overview" ? (

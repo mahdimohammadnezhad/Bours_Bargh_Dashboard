@@ -4,8 +4,8 @@ import Link from "next/link";
 import { useMemo } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { StatTile } from "@/components/StatTile";
-import { formatCompact, formatInt, formatPrice } from "@/lib/format";
-import { useI18n } from "@/lib/i18n";
+import { formatCompact, formatCompactPrecise, formatInt, formatPrice } from "@/lib/format";
+import { useI18n, type TranslationKey } from "@/lib/i18n";
 import type { LiveQuote } from "@/lib/useMarketSocket";
 import { useMarketSocket } from "@/lib/useMarketSocket";
 
@@ -33,8 +33,9 @@ function BestLimitsTable({
   side: "DEMAND" | "SUPPLY";
 }) {
   const { t } = useI18n();
+  // Levels the book no longer has come through as empty rows (no price).
   const rows = LEVELS.map((level) => quotes.get(`${SOURCE_ID}:TSETMC_FREE_${side}_L${level}`)).filter(
-    (q): q is LiveQuote => q !== undefined,
+    (q): q is LiveQuote => q !== undefined && q.last_price != null,
   );
 
   return (
@@ -104,11 +105,29 @@ export default function FreePowerMarketPage() {
     () =>
       (overview?.raw as {
         marketStateTitle?: string;
+        totalValue?: number;
+        totalCount?: number;
         mazadValue?: number;
         mazadCount?: number;
+        f60_MarketActivityQTotCap?: number;
+        f60_MarketActivityZTotTran?: number;
+        dggPlus60_MarketActivityQTotCap?: number;
       } | null) ?? null,
     [overview],
   );
+  // Same rows, order and wording as tsetmc.ir's "بازار برق آزاد در یک نگاه".
+  const glance: { label: TranslationKey; value: string }[] = overviewRaw
+    ? [
+        { label: "freePower.marketStatus", value: overviewRaw.marketStateTitle ?? "—" },
+        { label: "freePower.physicalValue", value: formatCompactPrecise(overviewRaw.totalValue ?? null) },
+        { label: "freePower.totalCount", value: formatInt(overviewRaw.totalCount ?? null) },
+        { label: "freePower.mazadValue", value: formatCompactPrecise(overviewRaw.mazadValue ?? null) },
+        { label: "freePower.mazadCount", value: formatInt(overviewRaw.mazadCount ?? null) },
+        { label: "freePower.forwardValue", value: formatCompactPrecise(overviewRaw.f60_MarketActivityQTotCap ?? null) },
+        { label: "freePower.forwardCount", value: formatInt(overviewRaw.f60_MarketActivityZTotTran ?? null) },
+        { label: "freePower.totalValue", value: formatCompactPrecise(overviewRaw.dggPlus60_MarketActivityQTotCap ?? null) },
+      ]
+    : [];
 
   return (
     <div className="flex flex-col gap-6">
@@ -122,13 +141,10 @@ export default function FreePowerMarketPage() {
         {!overview ? (
           <EmptyState title={t("freePower.empty.title")} detail={t("freePower.empty.detail")} />
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <StatTile label={t("freePower.marketStatus")} value={overviewRaw?.marketStateTitle ?? "—"} />
-            {/* overview.value is f60_MarketActivityQTotCap (see tsetmc_collector._parse_overview) */}
-            <StatTile label={t("freePower.totalValue")} value={formatCompact(overview.value)} />
-            <StatTile label={t("freePower.totalCount")} value={formatInt(overview.transaction_count)} />
-            <StatTile label={t("freePower.mazadValue")} value={formatCompact(overviewRaw?.mazadValue ?? null)} />
-            <StatTile label={t("freePower.mazadCount")} value={formatInt(overviewRaw?.mazadCount ?? null)} />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {glance.map((g) => (
+              <StatTile key={g.label} label={t(g.label)} value={g.value} />
+            ))}
           </div>
         )}
       </section>

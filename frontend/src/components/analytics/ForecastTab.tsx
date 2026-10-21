@@ -5,6 +5,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { StatTile } from "@/components/StatTile";
 import { BandLineChart, ROTATED_LABEL_EXTRA, type BandPoint } from "@/components/charts/BandLineChart";
 import { api } from "@/lib/api";
+import type { Market } from "@/lib/types";
 import { formatCompact } from "@/lib/format";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import type { Contributions, ForecastResponse } from "@/lib/types";
@@ -20,6 +21,7 @@ import {
   monthName,
   price,
   signedPct,
+  reasonText,
   useEndpoint,
   weekdayName,
 } from "./common";
@@ -30,14 +32,14 @@ function shortMonth(t: ReturnType<typeof useI18n>["t"], year: number, month: num
   return `${monthName(t, month)} ${String(year).slice(2)}`;
 }
 
-export function ForecastTab() {
+export function ForecastTab({ market }: { market: Market }) {
   const { t } = useI18n();
-  const { data, error } = useEndpoint(api.forecast);
+  const { data, error } = useEndpoint(() => api.forecast(market));
 
   if (error) return <EmptyState title={t("fc.failed")} detail={error} />;
   if (!data) return <EmptyState title={t("analytics.loading")} />;
   if (data.status !== "ok") {
-    return <EmptyState title={t("fc.failed")} detail={t("fc.insufficient", { reason: data.monthly.reason ?? "—" })} />;
+    return <EmptyState title={t("fc.failed")} detail={t("fc.insufficient", { reason: reasonText(t, data.monthly.reason) })} />;
   }
   return (
     <div className="flex flex-col gap-6">
@@ -64,7 +66,7 @@ function MonthlySection({ data }: { data: ForecastResponse }) {
   const [chosenModel, setChosenModel] = useState<string | null>(null);
   const m = data.monthly;
   if (m.status !== "ok" || !m.origin_label || m.origin_price === null || !m.validation) {
-    return <EmptyState title={t("fc.title.monthly")} detail={t("fc.insufficient", { reason: m.reason ?? "—" })} />;
+    return <EmptyState title={t("fc.title.monthly")} detail={t("fc.insufficient", { reason: reasonText(t, m.reason) })} />;
   }
   const validation = m.validation;
   // "Best" depends on what is shown: next-month error, or the 1-6 month average.
@@ -251,7 +253,7 @@ function ShortTermSection({ data }: { data: ForecastResponse }) {
   const [chosenModel, setChosenModel] = useState<string | null>(null);
   const d = data.daily;
   if (d.status !== "ok" || !d.validation) {
-    return <EmptyState title={t("fc.short.title")} detail={t("fc.insufficient", { reason: d.reason ?? "—" })} />;
+    return <EmptyState title={t("fc.short.title")} detail={t("fc.insufficient", { reason: reasonText(t, d.reason) })} />;
   }
   const best = bestModel(d.validation);
   const activeModel = chosenModel ?? best ?? "naive";

@@ -2,9 +2,10 @@
 
 import { EmptyState } from "@/components/EmptyState";
 import { api } from "@/lib/api";
+import type { Market } from "@/lib/types";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import type { Evidence, Signal } from "@/lib/types";
-import { MarketScope, SectionCard, isolate, monthLabel, monthName, signedPct, useEndpoint } from "./common";
+import { MarketScope, SectionCard, isolate, monthLabel, monthName, signedPct, useEndpoint, reasonText } from "./common";
 
 type Translate = ReturnType<typeof useI18n>["t"];
 
@@ -37,14 +38,14 @@ function evidenceText(t: Translate, e: Evidence): string {
   }
 }
 
-export function RecommendationsTab() {
+export function RecommendationsTab({ market }: { market: Market }) {
   const { t } = useI18n();
-  const { data, error } = useEndpoint(api.recommendations);
+  const { data, error } = useEndpoint(() => api.recommendations(market));
 
   if (error) return <EmptyState title={t("rc.failed")} detail={error} />;
   if (!data) return <EmptyState title={t("analytics.loading")} />;
   if (data.status !== "ok" || !data.signal) {
-    return <EmptyState title={t("rc.failed")} detail={t("fc.insufficient", { reason: data.reason ?? "—" })} />;
+    return <EmptyState title={t("rc.failed")} detail={t("fc.insufficient", { reason: reasonText(t, data.reason) })} />;
   }
   const signal = data.signal;
 

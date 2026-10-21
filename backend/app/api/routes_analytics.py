@@ -44,9 +44,15 @@ from app.schemas.analytics import (
 )
 from app.services import analytics_service, forecast_service
 from app.services.forecast_service import HISTORY_TRADING_DAYS, AnalysisBundle
-from app.services.historical_ingestion import POWER_BASELOAD_SYMBOL, SOURCE_ID
+from app.services.historical_ingestion import SOURCE_ID
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
+
+MARKET_QUERY = Query(
+    forecast_service.DEFAULT_MARKET,
+    pattern="^(" + "|".join(forecast_service.MARKETS) + ")$",
+    description="free_forward (Free Power forward base load, default), free_physical, or power (main market base load)",
+)
 
 
 @router.get("/overview", response_model=AnalyticsOverviewOut)
@@ -83,8 +89,9 @@ def _month_label(month: tuple[int, int]) -> str:
 def _series(bundle: AnalysisBundle) -> SeriesInfo:
     rows = bundle.daily_rows
     return SeriesInfo(
+        market=bundle.market,
         source_id=SOURCE_ID,
-        symbol=POWER_BASELOAD_SYMBOL,
+        symbol=bundle.symbol,
         unit="Rials/kWh",
         first_day=rows[0][0] if rows else None,
         last_day=rows[-1][0] if rows else None,
@@ -142,8 +149,8 @@ def _day_points(points: list[DailyPoint]) -> list[DailyForecastPointOut]:
 
 
 @router.get("/forecast", response_model=ForecastOut)
-async def forecast(db: AsyncSession = Depends(get_db)) -> ForecastOut:
-    bundle = await forecast_service.get_analysis(db)
+async def forecast(market: str = MARKET_QUERY, db: AsyncSession = Depends(get_db)) -> ForecastOut:
+    bundle = await forecast_service.get_analysis(db, market)
     daily, monthly = bundle.daily, bundle.monthly
     rows = bundle.daily_rows[-HISTORY_TRADING_DAYS:]
     window_start = rows[0][0] if rows else bundle.today - timedelta(days=180)
@@ -215,8 +222,8 @@ async def forecast(db: AsyncSession = Depends(get_db)) -> ForecastOut:
 
 
 @router.get("/patterns", response_model=PatternsOut)
-async def patterns(db: AsyncSession = Depends(get_db)) -> PatternsOut:
-    bundle = await forecast_service.get_analysis(db)
+async def patterns(market: str = MARKET_QUERY, db: AsyncSession = Depends(get_db)) -> PatternsOut:
+    bundle = await forecast_service.get_analysis(db, market)
     p = bundle.patterns
     if p.status != "ok":
         return PatternsOut(status=p.status, reason=p.reason, generated_at=bundle.generated_at, series=_series(bundle))
@@ -250,8 +257,8 @@ async def patterns(db: AsyncSession = Depends(get_db)) -> PatternsOut:
 
 
 @router.get("/recommendations", response_model=RecommendationOut)
-async def recommendations(db: AsyncSession = Depends(get_db)) -> RecommendationOut:
-    bundle = await forecast_service.get_analysis(db)
+async def recommendations(market: str = MARKET_QUERY, db: AsyncSession = Depends(get_db)) -> RecommendationOut:
+    bundle = await forecast_service.get_analysis(db, market)
     r = bundle.recommendation
     return RecommendationOut(
         status=r.status,

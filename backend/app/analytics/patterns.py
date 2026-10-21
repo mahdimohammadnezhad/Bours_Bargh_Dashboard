@@ -118,7 +118,9 @@ def _pearson(xs: list[float], ys: list[float]) -> float | None:
     return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sx * sy)
 
 
-def seasonal_deviations(prices: list[tuple[date, float]], current_jalali_year: int) -> tuple[dict[date, float], list[int]]:
+def seasonal_deviations(
+    prices: list[tuple[date, float]], current_jalali_year: int, min_year_days: int = MIN_YEAR_TRADING_DAYS
+) -> tuple[dict[date, float], list[int]]:
     """Per trading day: log price minus its (complete) Jalali year's mean."""
     by_year: dict[int, list[tuple[date, float]]] = {}
     for d, p in prices:
@@ -126,7 +128,7 @@ def seasonal_deviations(prices: list[tuple[date, float]], current_jalali_year: i
     out: dict[date, float] = {}
     years: list[int] = []
     for year, rows in sorted(by_year.items()):
-        if year >= current_jalali_year or len(rows) < MIN_YEAR_TRADING_DAYS:
+        if year >= current_jalali_year or len(rows) < min_year_days:
             continue
         mean = statistics.fmean(lp for _, lp in rows)
         out.update({d: lp - mean for d, lp in rows})
@@ -320,13 +322,18 @@ def _display_features(f: dict[str, float]) -> dict[str, float]:
 
 
 def build_patterns(
-    daily: list[tuple[date, float, float, float]], temps: dict[date, float], today: date
+    daily: list[tuple[date, float, float, float]],
+    temps: dict[date, float],
+    today: date,
+    min_days: int = 250,
+    min_year_days: int = MIN_YEAR_TRADING_DAYS,
 ) -> PatternsResult:
+    """min_days / min_year_days are lower for young markets (Free Power)."""
     prices = sorted((d, p) for d, p, _, _ in daily if p and p > 0)
-    if len(prices) < 250:
+    if len(prices) < min_days:
         return PatternsResult(status="insufficient_data", reason="price_history")
     current_year = jdatetime.date.fromgregorian(date=today).year
-    deviations, years = seasonal_deviations(prices, current_year)
+    deviations, years = seasonal_deviations(prices, current_year, min_year_days)
     since = date(today.year - WEEKDAY_LOOKBACK_YEARS, today.month, min(today.day, 28))
     bins, corr, n_temp = temperature_relationship(deviations, temps)
     current, analogues, summary = find_analogues(prices, temps)

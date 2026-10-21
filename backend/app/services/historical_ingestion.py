@@ -79,6 +79,8 @@ and can be compared/overlaid, differing only by `source_id`.
 
 import asyncio
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -385,33 +387,88 @@ async def backfill_iee_derivative_free_power_history(
     return written
 
 
-def aggregate_power_baseload_daily(rows: list[dict]) -> list[NormalizedQuote]:
-    """Per-contract report rows -> one base-load VWAP quote per trading day.
+@dataclass(frozen=True)
+class DailySeries:
+    """A daily volume-weighted price series built from one IEE statistics report."""
 
-    price = total traded value / total kWh across that day's base-load
-    contracts (Rials/kWh; for a single contract this equals IEE's own
-    avgPrice, e.g. 2,958,134,731,920 / 869,950,080 = 3,400). Days and
-    contracts without trades are left out - their prices are placeholders.
+    symbol: str
+    path: str
+    earliest_jalali_year: int
+    date_field: str
+    value_fields: tuple[str, ...]  # first non-empty one wins
+    include: Callable[[dict], bool]
+    label_fields: tuple[str, ...]
+    unit: str
+
+
+def _is_baseload(row: dict) -> bool:
+    return str(row.get("contract") or "").startswith(_BASELOAD_PREFIX)
+
+
+# The physical Free-market report also lists "برق خودتامین" (self-supply,
+# ~11-18k) and plain "برق" auctions - 168 of 1,954 traded rows by 1405/07.
+# Only rows labelled "برق آزاد" are Free Power; mixing the others in is
+# exactly the kind of wrong price the dashboard must not show.
+_FREE_POWER_LABEL = "برق آزاد"
+
+DAILY_SERIES: dict[str, DailySeries] = {
+    "power": DailySeries(
+        symbol=POWER_BASELOAD_SYMBOL,
+        path=POWER_DERIVATIVE_STATS_PATH,
+        earliest_jalali_year=POWER_STATS_EARLIEST_JALALI_YEAR,
+        date_field="date",
+        value_fields=("tradeValueNumber", "tradeValue"),
+        include=_is_baseload,
+        label_fields=("contract", "energySymbol", "avgPrice"),
+        unit="Rials/kWh, volume-weighted over the main power market's base-load contracts",
+    ),
+    # What tsetmc.ir's Free Power tab shows as best bids/asks: forward
+    # ("سلف") base-load weekly/monthly contracts. History from 1404/01.
+    "free_forward": DailySeries(
+        symbol="IEE_FREE_FORWARD_BASELOAD_DAILY",
+        path=DERIVATIVE_FREE_STATS_PATH,
+        earliest_jalali_year=DERIVATIVE_FREE_STATS_EARLIEST_JALALI_YEAR,
+        date_field="date",
+        value_fields=("tradeValueNumber", "tradeValue"),
+        include=_is_baseload,
+        label_fields=("contract", "energySymbol", "avgPrice"),
+        unit="Rials/kWh, volume-weighted over Free Power forward base-load contracts",
+    ),
+    # Physical Free Power auctions (tsetmc.ir: "بازار فیزیکی برق آزاد").
+    # Verified 2026-10-21: history from 1403 (99 rows), 1404: 1,678, 1405: 965.
+    "free_physical": DailySeries(
+        symbol="IEE_FREE_PHYSICAL_DAILY",
+        path="/PowerFreeMarket/GetPhysicalFreePowerTradesStatistics",
+        earliest_jalali_year=1403,
+        date_field="tradeDateShamsi",
+        value_fields=("totalValueRials",),
+        include=lambda row: row.get("instrumentDisplayName") == _FREE_POWER_LABEL,
+        label_fields=("energySymbol", "auctionDesc", "tradedAveragePrice"),
+        unit="Rials/kWh, volume-weighted over physical Free Power auctions",
+    ),
+}
+
+
+def aggregate_daily_vwap(rows: list[dict], series: DailySeries) -> list[NormalizedQuote]:
+    """Report rows -> one volume-weighted price per trading day.
+
+    price = total traded value / total kWh over that day's included rows
+    (for a single row this equals IEE's own average price, e.g.
+    2,958,134,731,920 / 869,950,080 = 3,400). Rows without trades are left
+    out - their prices are placeholders. Contributing rows go in `raw`.
     """
     by_day: dict[datetime, list[dict]] = {}
     for row in rows:
-        if not isinstance(row, dict) or not str(row.get("contract") or "").startswith(_BASELOAD_PREFIX):
+        if not isinstance(row, dict) or not series.include(row):
             continue
         trades = _parse_comma_number(row.get("tradeNo"))
-        value = _parse_comma_number(row.get("tradeValueNumber")) or _parse_comma_number(row.get("tradeValue"))
+        value = next((v for f in series.value_fields if (v := _parse_comma_number(row.get(f)))), None)
         kwh = _parse_comma_number(row.get("kiloWattHours"))
-        observed_at = _parse_jalali_date_utc(row.get("date"))
+        observed_at = _parse_jalali_date_utc(row.get(series.date_field))
         if not trades or not value or not kwh or observed_at is None:
             continue
         by_day.setdefault(observed_at, []).append(
-            {
-                "contract": row.get("contract"),
-                "energySymbol": row.get("energySymbol"),
-                "avgPrice": _parse_comma_number(row.get("avgPrice")),
-                "tradeNo": int(trades),
-                "kWh": kwh,
-                "value": value,
-            }
+            {**{f: row.get(f) for f in series.label_fields}, "tradeNo": int(trades), "kWh": kwh, "value": value}
         )
 
     quotes: list[NormalizedQuote] = []
@@ -421,7 +478,7 @@ def aggregate_power_baseload_daily(rows: list[dict]) -> list[NormalizedQuote]:
         quotes.append(
             NormalizedQuote(
                 source_id=SOURCE_ID,
-                source_symbol=POWER_BASELOAD_SYMBOL,
+                source_symbol=series.symbol,
                 observed_at=observed_at,
                 last_price=round(value / kwh, 2),
                 volume=kwh,
@@ -429,7 +486,7 @@ def aggregate_power_baseload_daily(rows: list[dict]) -> list[NormalizedQuote]:
                 transaction_count=sum(c["tradeNo"] for c in contracts),
                 raw={
                     "date": jdatetime.date.fromgregorian(date=observed_at.date()).strftime("%Y/%m/%d"),
-                    "unit": "Rials/kWh, volume-weighted over base-load contracts",
+                    "unit": series.unit,
                     "contracts": contracts,
                 },
             )
@@ -437,35 +494,41 @@ def aggregate_power_baseload_daily(rows: list[dict]) -> list[NormalizedQuote]:
     return quotes
 
 
-async def backfill_power_baseload_history(
+def aggregate_power_baseload_daily(rows: list[dict]) -> list[NormalizedQuote]:
+    return aggregate_daily_vwap(rows, DAILY_SERIES["power"])
+
+
+async def backfill_daily_series(
     session: AsyncSession,
     client: httpx.AsyncClient,
     base_url: str,
-    start_jalali_year: int = POWER_STATS_EARLIEST_JALALI_YEAR,
+    series: DailySeries,
+    start_jalali_year: int | None = None,
     end_jalali_year: int | None = None,
 ) -> int:
-    """Fetch the main power market's daily statistics one Jalali year per
-    request and store the base-load daily VWAP. Idempotent upserts keyed on
-    (source, symbol, day), so re-running for the current year just updates
-    today's row. A failed year is logged and skipped."""
+    """Fetch a statistics report one Jalali year per request and store its
+    daily VWAP. Idempotent upserts keyed on (source, symbol, day), so
+    re-running for the current year just updates recent rows. A failed year
+    is logged and skipped."""
     today = jdatetime.date.today()
+    start_jalali_year = start_jalali_year or series.earliest_jalali_year
     end_jalali_year = end_jalali_year or today.year
     written = 0
     for year in range(start_jalali_year, end_jalali_year + 1):
         from_date, to_date = _jalali_year_window(year, today)
         await asyncio.sleep(IEE_REQUEST_SPACING_SECONDS)
         try:
-            rows = await _fetch_statistics(client, base_url, POWER_DERIVATIVE_STATS_PATH, from_date, to_date)
+            rows = await _fetch_statistics(client, base_url, series.path, from_date, to_date)
         except httpx.HTTPError as exc:
-            logger.warning("historical_ingestion: power derivative stats %s failed, skipping: %r", year, exc)
+            logger.warning("historical_ingestion: %s %s failed, skipping: %r", series.symbol, year, exc)
             continue
 
-        quotes = aggregate_power_baseload_daily(rows)
+        quotes = aggregate_daily_vwap(rows, series)
         async with db_write_lock():
             for quote in quotes:
                 await upsert_quote(session, quote)
             await session.commit()
         written += len(quotes)
-        logger.info("historical_ingestion: power base-load daily %s -> %d days (%d rows)", year, len(quotes), len(rows))
+        logger.info("historical_ingestion: %s %s -> %d days (%d rows)", series.symbol, year, len(quotes), len(rows))
 
     return written

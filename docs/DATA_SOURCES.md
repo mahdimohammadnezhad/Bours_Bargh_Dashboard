@@ -203,6 +203,17 @@ The current in-progress Jalali month returned an empty result while the prior co
 - Stored as one daily row, `IEE_POWER_BASELOAD_DAILY`: the volume-weighted average of all traded base-load contracts that day, Σ value / Σ kWh in Rials/kWh. For a single contract this equals IEE's `avgPrice`. The contributing contracts are kept in `raw`. That gives 1,037 trading days (Sat–Wed only).
 - What it shows: every year the price rises from Farvardin, peaks in Tir/Mordad (+19–22% above the year's average), and falls to −8…−14% in winter. On top of that there is strong inflation and a jump at Nowruz when the year's price caps reset. 1405 roughly doubled the level (~1,700 → ~3,400).
 
+#### Free Power daily series (default market for forecast / patterns / recommendations)
+
+Verified 2026-10-21. Implemented as `DAILY_SERIES` in `historical_ingestion.py`; select with `?market=` on `/api/analytics/*`.
+
+- **`free_forward`** (default): `GET /PowerMarket/GetDerivativeFreePowerMarketStatistics`. Free Power forward ("سلف") base-load weekly/monthly contracts, which are what tsetmc.ir's Free Power tab quotes as best bids/asks. 260 traded rows on 188 days since 1404/01.
+- **`free_physical`**: `GET /PowerFreeMarket/GetPhysicalFreePowerTradesStatistics`. Physical Free Power auctions since 1403: 2,740 rows, 1,954 traded on 232 days. **This report also contains "برق خودتامین" (self-supply, ~11-18k) and plain "برق" auctions** (168 traded rows). Only rows with `instrumentDisplayName == "برق آزاد"` are kept, which leaves 202 days.
+- Price = Σ value / Σ `kiloWattHours` (equals each row's own average price). Free Power prices run ~60,000-150,000 Rials/kWh vs ~3,400-4,900 in the main regulated market, so the two must never be mixed.
+- **Only ~1.5 years of history and very volatile** (day-to-day log-price sd 0.29-0.43). Walk-forward on 2026-10-21: no model beat "no change" over 14 days (forward base load: 28.7% MAPE), so that is the default. A monthly outlook needs 3+ years and reports `insufficient_data`. Recommendations need at least two independent directional pieces of evidence; otherwise the signal is "mixed".
+
+tsetmc.ir's "بازار برق آزاد در یک نگاه" panel maps as follows: `totalValue`/`totalCount` = physical market; `f60_MarketActivityQTotCap`/`f60_MarketActivityZTotTran` = forward ("سلف") trades; `dggPlus60_MarketActivityQTotCap` = total. Checked against the site on 2026-10-11 (all forward, 265B / 7 trades) and 2026-10-21 (all physical, 95.982B / 3 trades).
+
 ## Weather — Open-Meteo (for the price forecast)
 
 - Archive: `https://archive-api.open-meteo.com/v1/archive` (ERA5 reanalysis, ~5-day lag). Forecast: `https://api.open-meteo.com/v1/forecast` (16 days ahead; `past_days` covers the archive lag).

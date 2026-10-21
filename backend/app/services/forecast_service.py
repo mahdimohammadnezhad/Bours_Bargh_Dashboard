@@ -1,10 +1,18 @@
-"""Runs forecast / patterns / recommendation over the stored series.
+"""Runs forecast / patterns / recommendation over the stored series, per market.
 
-Inputs: the daily base-load VWAP rows (historical_ingestion.POWER_BASELOAD_SYMBOL)
-and the national daily temperatures (weather_daily). The analysis takes
-about a second of pure-Python work, so it runs in a worker thread (never on
-the event loop that serves the WebSocket) and its result is cached until
-the inputs change - checked with a cheap fingerprint on every request.
+Markets (historical_ingestion.DAILY_SERIES): Free Power forward base load
+(default - what tsetmc.ir's Free Power tab quotes), physical Free Power, and
+the main regulated power market's base load. Inputs are each market's daily
+VWAP rows plus the national daily temperatures (weather_daily).
+
+Free Power has only ~1.5 years of history (from 1403/1404), so its
+thresholds are lower and its monthly outlook honestly reports
+insufficient_data (it needs 3+ years to learn and validate seasonality).
+
+The analysis takes about a second of pure-Python work, so it runs in a
+worker thread (never on the event loop that serves the WebSocket) and each
+market's result is cached until its inputs change - checked with a cheap
+fingerprint on every request.
 """
 
 from __future__ import annotations
@@ -18,20 +26,45 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.analytics.forecast import DailyForecast, MonthlyOutlook, build_daily_forecast, build_monthly_outlook
-from app.analytics.patterns import PatternsResult, build_patterns
+from app.analytics.forecast import (
+    MIN_TRADING_DAYS,
+    DailyForecast,
+    MonthlyOutlook,
+    build_daily_forecast,
+    build_monthly_outlook,
+)
+from app.analytics.patterns import MIN_YEAR_TRADING_DAYS, PatternsResult, build_patterns
 from app.analytics.recommendation import Recommendation, build_recommendation
 from app.analytics.stats import percentile_rank
 from app.models.market import MarketQuote
-from app.services.historical_ingestion import POWER_BASELOAD_SYMBOL, SOURCE_ID
+from app.services.historical_ingestion import DAILY_SERIES, SOURCE_ID
 from app.services.weather import load_temperatures, tehran_today
 
 HISTORY_TRADING_DAYS = 120
 VOLATILITY_WINDOW = 20
 
 
+@dataclass(frozen=True)
+class MarketConfig:
+    key: str
+    series_key: str  # key in DAILY_SERIES
+    min_trading_days: int
+    min_pattern_days: int
+    min_year_days: int
+
+
+MARKETS: dict[str, MarketConfig] = {
+    "free_forward": MarketConfig("free_forward", "free_forward", 120, 120, 40),
+    "free_physical": MarketConfig("free_physical", "free_physical", 120, 120, 40),
+    "power": MarketConfig("power", "power", MIN_TRADING_DAYS, 250, MIN_YEAR_TRADING_DAYS),
+}
+DEFAULT_MARKET = "free_forward"
+
+
 @dataclass
 class AnalysisBundle:
+    market: str
+    symbol: str
     fingerprint: tuple
     generated_at: datetime
     today: date
@@ -45,15 +78,17 @@ class AnalysisBundle:
     volatility_percentile: float | None
 
 
-_cache: AnalysisBundle | None = None
+_cache: dict[str, AnalysisBundle] = {}
 _lock = asyncio.Lock()
 
 
-async def load_inputs(session: AsyncSession) -> tuple[list[tuple[date, float, float, float]], dict[date, float], set[date]]:
+async def load_inputs(
+    session: AsyncSession, symbol: str
+) -> tuple[list[tuple[date, float, float, float]], dict[date, float], set[date]]:
     rows = (
         await session.execute(
             select(MarketQuote.observed_at, MarketQuote.last_price, MarketQuote.value, MarketQuote.volume)
-            .where(MarketQuote.source_id == SOURCE_ID, MarketQuote.source_symbol == POWER_BASELOAD_SYMBOL)
+            .where(MarketQuote.source_id == SOURCE_ID, MarketQuote.source_symbol == symbol)
             .order_by(MarketQuote.observed_at)
         )
     ).all()
@@ -81,14 +116,18 @@ def analyse(
     forecast_days: set[date],
     today: date,
     fingerprint: tuple = (),
+    market: str = "power",
 ) -> AnalysisBundle:
+    config = MARKETS[market]
     prices = [(d, p) for d, p, _, _ in daily]
-    daily_forecast = build_daily_forecast(prices, temps)
+    daily_forecast = build_daily_forecast(prices, temps, min_trading_days=config.min_trading_days)
     monthly = build_monthly_outlook(daily, temps, forecast_days, today)
-    patterns = build_patterns(daily, temps, today)
+    patterns = build_patterns(daily, temps, today, min_days=config.min_pattern_days, min_year_days=config.min_year_days)
     volatility_percentile = _volatility_percentile([p for _, p in prices])
     recommendation = build_recommendation(monthly, daily_forecast, patterns, volatility_percentile)
     return AnalysisBundle(
+        market=market,
+        symbol=DAILY_SERIES[config.series_key].symbol,
         fingerprint=fingerprint,
         generated_at=datetime.now(timezone.utc),
         today=today,
@@ -103,9 +142,9 @@ def analyse(
     )
 
 
-async def get_analysis(session: AsyncSession) -> AnalysisBundle:
-    global _cache
-    daily, temps, forecast_days = await load_inputs(session)
+async def get_analysis(session: AsyncSession, market: str = DEFAULT_MARKET) -> AnalysisBundle:
+    config = MARKETS[market]
+    daily, temps, forecast_days = await load_inputs(session, DAILY_SERIES[config.series_key].symbol)
     today = tehran_today()
     fingerprint = (
         today,
@@ -115,10 +154,13 @@ async def get_analysis(session: AsyncSession) -> AnalysisBundle:
         round(sum(temps.values()), 2),
         len(forecast_days),
     )
-    if _cache is not None and _cache.fingerprint == fingerprint:
-        return _cache
+    cached = _cache.get(market)
+    if cached is not None and cached.fingerprint == fingerprint:
+        return cached
     async with _lock:
-        if _cache is not None and _cache.fingerprint == fingerprint:
-            return _cache
-        _cache = await asyncio.to_thread(analyse, daily, temps, forecast_days, today, fingerprint)
-        return _cache
+        cached = _cache.get(market)
+        if cached is not None and cached.fingerprint == fingerprint:
+            return cached
+        bundle = await asyncio.to_thread(analyse, daily, temps, forecast_days, today, fingerprint, market)
+        _cache[market] = bundle
+        return bundle

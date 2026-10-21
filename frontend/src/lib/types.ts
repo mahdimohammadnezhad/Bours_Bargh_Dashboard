@@ -167,7 +167,13 @@ export interface Anomaly {
 
 // ---- market-level forecast / patterns / recommendations (base-load daily VWAP)
 
+/** Markets the forecast/patterns/recommendations can run on (backend MARKETS). */
+export const MARKETS = ["free_forward", "free_physical", "power"] as const;
+export type Market = (typeof MARKETS)[number];
+export const DEFAULT_MARKET: Market = "free_forward";
+
 export interface SeriesInfo {
+  market: Market;
   source_id: string;
   symbol: string;
   unit: string;
@@ -314,7 +320,7 @@ export interface RecommendationResponse {
   score: number | null;
   agreement_pct: number | null;
   volatility_percentile: number | null;
-  caution: ("high_volatility" | "temperature_from_normals" | "current_month_partial" | "nowruz_reset_ahead")[];
+  caution: ("high_volatility" | "temperature_from_normals" | "current_month_partial" | "nowruz_reset_ahead" | "short_history")[];
   evidence: Evidence[];
 }
 
